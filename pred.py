@@ -10,6 +10,7 @@ import argparse
 from llama_flash_attn_monkey_patch import replace_llama_attn_with_flash_attn
 import torch.distributed as dist
 import torch.multiprocessing as mp
+
 from vllm import LLM, SamplingParams
 
 def parse_args(args=None):
@@ -26,6 +27,7 @@ def parse_args(args=None):
         "llama2-7b-chat-32k",
     ])
     parser.add_argument('--e', action='store_true', help="Evaluate on LongBench-E")
+    parser.add_argument('--stride', type=int, default=None)
     return parser.parse_args(args)
 
 # This is the customized building prompt for chat models
@@ -219,7 +221,7 @@ if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model_name = args.model
     # define your model
-    max_length = model2maxlen[model_name]
+    max_length = model2maxlen[model_name] if args.stride is None else args.stride
     if args.e:
         datasets = ["qasper", "multifieldqa_en", "hotpotqa", "2wikimqa", "gov_report", "multi_news", \
             "trec", "triviaqa", "samsum", "passage_count", "passage_retrieval_en", "lcc", "repobench-p"]
@@ -280,9 +282,3 @@ if __name__ == '__main__':
                 model=model,
                 tokenizer=tokenizer,
             )
-        #     p = mp.Process(target=get_pred, args=(rank, world_size, data_subsets[rank], max_length, \
-        #                 max_gen, prompt_format, dataset, device, model_name, model2path, out_path))
-        #     p.start()
-        #     processes.append(p)
-        # for p in processes:
-        #     p.join()
