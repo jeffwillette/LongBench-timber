@@ -61,6 +61,9 @@ def post_process(response, model_name):
         response = response.split("<eoa>")[0]
     return response
 
+ATTENTION_METHOD = os.getenv('ATTENTION_METHOD', 'none')
+HIP_K = int(os.getenv('HIP_K', '512'))
+
 def get_pred(
     rank, 
     world_size, 
@@ -102,46 +105,47 @@ def get_pred(
                 input = tokenizer(prompt, truncation=False, return_tensors="pt").to(device)
             context_length = input.input_ids.shape[-1]
             
-            # if dataset == "samsum": # prevent illegal output on samsum (model endlessly repeat "\nDialogue"), might be a prompting issue
-            #     raise Exception()
-            #     with torch.inference_mode():
-            #         output = model.generate(
-            #             **input,
-            #             max_new_tokens=max_gen,
-            #             num_beams=1,
-            #             do_sample=False,
-            #             temperature=1.0,
-            #             min_length=context_length+1,
-            #             eos_token_id=[tokenizer.eos_token_id, tokenizer.encode("\n", add_special_tokens=False)[-1]],
-            #         )[0]
-            # else:
-            #     output = model.generate(
-            #         **input,
-            #         max_new_tokens=max_gen,
-            #         num_beams=1,
-            #         do_sample=False,
-            #         temperature=1.0,
-            #     )[0]
-            # pred = tokenizer.decode(output[context_length:], skip_special_tokens=True)
-            
-            sampling_params = SamplingParams(
-                temperature=1.0,
-                top_p=1.0,
-                top_k=1, # No sampleing
-                max_tokens=max_gen,
-                frequency_penalty=0.0,
-                repetition_penalty=1.0,
-                ignore_eos=False,
-                skip_special_tokens=True,
-            )
-            
-            prompt = tokenizer.decode(input.input_ids[0], skip_special_tokens=True)
-            vllm_outputs = model.generate(
-                prompt, 
-                sampling_params,
-                use_tqdm=False,
-            )
-            pred = vllm_outputs[0].outputs[0].text
+            if ATTENTION_METHOD == 'streaming_llm':
+                if dataset == "samsum": # prevent illegal output on samsum (model endlessly repeat "\nDialogue"), might be a prompting issue
+                    raise Exception()
+                    with torch.inference_mode():
+                        output = model.generate(
+                            **input,
+                            max_new_tokens=max_gen,
+                            num_beams=1,
+                            do_sample=False,
+                            temperature=1.0,
+                            min_length=context_length+1,
+                            eos_token_id=[tokenizer.eos_token_id, tokenizer.encode("\n", add_special_tokens=False)[-1]],
+                        )[0]
+                else:
+                    output = model.generate(
+                        **input,
+                        max_new_tokens=max_gen,
+                        num_beams=1,
+                        do_sample=False,
+                        temperature=1.0,
+                    )[0]
+                pred = tokenizer.decode(output[context_length:], skip_special_tokens=True)
+            else:
+                sampling_params = SamplingParams(
+                    temperature=1.0,
+                    top_p=1.0,
+                    top_k=1, # No sampleing
+                    max_tokens=max_gen,
+                    frequency_penalty=0.0,
+                    repetition_penalty=1.0,
+                    ignore_eos=False,
+                    skip_special_tokens=True,
+                )
+                
+                prompt = tokenizer.decode(input.input_ids[0], skip_special_tokens=True)
+                vllm_outputs = model.generate(
+                    prompt, 
+                    sampling_params,
+                    use_tqdm=False,
+                )
+                pred = vllm_outputs[0].outputs[0].text
             
             pred = post_process(pred, model_name)
             
@@ -161,19 +165,40 @@ def seed_everything(seed):
 
 def load_model_and_tokenizer(path, model_name, device, seq_len):
     tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
-    model = LLM(
-        path,
-        max_num_seqs=1,
-        max_context_len_to_capture=seq_len + 500,
-        max_model_len=seq_len + 500,
-        swap_space=0,
-        kv_cache_dtype='fp8_e5m2',
-        dtype='half',
-        gpu_memory_utilization=0.9,
-        tensor_parallel_size=torch.cuda.device_count(),
-        enforce_eager=os.environ.get('FORCE_EAGER','0')=='1',
-        trust_remote_code=True,
-    )
+    
+    if ATTENTION_METHOD == 'streaming_llm':
+        from timber.models.modeling_llama import LlamaCustomAttention
+        
+        config = AutoConfig.from_pretrained(path)
+        config.attn_implementation = config._attn_implementation = 'sdpa'
+        model = LlamaForCausalLM.from_pretrained(
+            path,
+            config=config,
+            torch_dtype=torch.bfloat16,
+            load_in_4bit=True,
+            device_map={'':device}
+        )
+        
+        for m in model.modules():
+            if isinstance(m, LlamaCustomAttention):
+                m.attention_method = 'streaming_llm'
+                m.tree_k = HIP_K
+        
+        model.eval()
+    else:
+        model = LLM(
+            path,
+            max_num_seqs=1,
+            max_context_len_to_capture=seq_len + 500,
+            max_model_len=seq_len + 500,
+            swap_space=0,
+            kv_cache_dtype='fp8_e5m2',
+            dtype='half',
+            gpu_memory_utilization=0.9,
+            tensor_parallel_size=torch.cuda.device_count(),
+            enforce_eager=os.environ.get('FORCE_EAGER','0')=='1',
+            trust_remote_code=True,
+        )
     
     return model, tokenizer
     
