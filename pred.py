@@ -27,8 +27,20 @@ def parse_args(args=None):
         "llama2-7b-chat-32k",
     ])
     parser.add_argument('--e', action='store_true', help="Evaluate on LongBench-E")
+    parser.add_argument('--method', required=True, type=str, choices=[
+        'none',
+        'hip',
+        'streaming_llm',
+    ])
+    parser.add_argument('--k', default=None, type=int)
     parser.add_argument('--stride', type=int, default=None)
-    return parser.parse_args(args)
+    
+    args = parser.parse_args(args)
+    
+    if args.method in ['streaming_llm', 'hip']:
+        assert args.k is not None, 'sparse attention require k'
+    
+    return args
 
 # This is the customized building prompt for chat models
 def build_chat(tokenizer, prompt, model_name):
@@ -238,6 +250,8 @@ def load_model_and_tokenizer(path, model_name, device, seq_len):
 if __name__ == '__main__':
     seed_everything(42)
     args = parse_args()
+    
+    # vllm will parallelize
     world_size = 1
     # mp.set_start_method('spawn', force=True)
 
@@ -245,6 +259,7 @@ if __name__ == '__main__':
     model2maxlen = json.load(open("config/model2maxlen.json", "r"))
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model_name = args.model
+    
     # define your model
     max_length = model2maxlen[model_name] if args.stride is None else args.stride
     if args.e:
@@ -259,14 +274,14 @@ if __name__ == '__main__':
             'hotpotqa', '2wikimqa',
             'gov_report', 'multi_news',
         ]
+    
     # we design specific prompt format and max generation length for each task, feel free to modify them to optimize model output
     dataset2prompt = json.load(open("config/dataset2prompt.json", "r"))
     dataset2maxlen = json.load(open("config/dataset2maxlen.json", "r"))
+    
     # predict on each dataset
-    if not os.path.exists("pred"):
-        os.makedirs("pred")
-    if not os.path.exists("pred_e"):
-        os.makedirs("pred_e")
+    os.makedirs("pred", exist_ok=True)
+    os.makedirs("pred_e", exist_ok=True)
     
     model, tokenizer = load_model_and_tokenizer(
         model2path[model_name],
@@ -276,16 +291,25 @@ if __name__ == '__main__':
     )
     
     for dataset in datasets:
+        pred_root_name = None
         if args.e:
             data = load_dataset('THUDM/LongBench', f"{dataset}_e", split='test')
-            if not os.path.exists(f"pred_e/{model_name}"):
-                os.makedirs(f"pred_e/{model_name}")
-            out_path = f"pred_e/{model_name}/{dataset}.jsonl"
+            pred_root_name = 'pred_e'
         else:
             data = load_dataset('THUDM/LongBench', dataset, split='test')
-            if not os.path.exists(f"pred/{model_name}"):
-                os.makedirs(f"pred/{model_name}")
-            out_path = f"pred/{model_name}/{dataset}.jsonl"
+            pred_root_name = 'pred'
+        
+        if args.method == 'none':
+            pred_root = f"{pred_root_name}/{model_name}_{args.method}"
+        elif args.method in ['streaming_llm', 'hip']:
+            pred_root = f"{pred_root_name}/{model_name}_{args.method}_k{args.k}"
+        else:
+            raise Exception()
+        
+        pred_root = f"pred/{model_name}_{args.method}_k{args.k}"
+        os.makedirs(pred_root, exist_ok=True)
+        out_path = os.path.join(pred_root, f'{dataset}.jsonl')
+        
         prompt_format = dataset2prompt[dataset]
         max_gen = dataset2maxlen[dataset]
         data_all = [data_sample for data_sample in data]

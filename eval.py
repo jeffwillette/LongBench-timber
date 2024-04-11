@@ -41,9 +41,31 @@ dataset2metric = {
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, default=None)
+    parser.add_argument('--model', type=str, default=None, choices=[
+        "llama2-7b-chat-4k", 
+        "longchat-v1.5-7b-32k", 
+        "xgen-7b-8k", 
+        "internlm-7b-8k", 
+        "chatglm2-6b", 
+        "chatglm2-6b-32k", 
+        "chatglm3-6b-32k", 
+        "vicuna-v1.5-7b-16k",
+        "llama2-7b-chat-32k",
+    ])
     parser.add_argument('--e', action='store_true', help="Evaluate on LongBench-E")
-    return parser.parse_args(args)
+    parser.add_argument('--method', required=True, type=str, choices=[
+        'none',
+        'hip',
+        'streaming_llm',
+    ])
+    parser.add_argument('--k', default=None, type=int)
+    
+    args = parser.parse_args(args)
+    
+    if args.method in ['streaming_llm', 'hip']:
+        assert args.k is not None, 'sparse attention require k'
+    
+    return args
 
 def scorer_e(dataset, predictions, answers, lengths, all_classes):
     scores = {"0-4k": [], "4-8k": [], "8k+": []}
@@ -76,11 +98,21 @@ def scorer(dataset, predictions, answers, all_classes):
 
 if __name__ == '__main__':
     args = parse_args()
+    
     scores = dict()
+    pred_root_name = None
     if args.e:
-        path = f"pred_e/{args.model}/"
+        pred_root_name = 'pred_e'
     else:
-        path = f"pred/{args.model}/"
+        pred_root_name = 'pred'
+    
+    if args.method == 'none':
+        path = f"{pred_root_name}/{args.model}_{args.method}"
+    elif args.method in ['streaming_llm', 'hip']:
+        path = f"{pred_root_name}/{args.model}_{args.method}_k{args.k}"
+    else:
+        raise Exception()
+    
     all_files = os.listdir(path)
     print("Evaluating on:", all_files)
     for filename in all_files:
@@ -101,9 +133,10 @@ if __name__ == '__main__':
         else:
             score = scorer(dataset, predictions, answers, all_classes)
         scores[dataset] = score
-    if args.e:
-        out_path = f"pred_e/{args.model}/result.json"
-    else:
-        out_path = f"pred/{args.model}/result.json"
+    
+    out_path = os.path.join(path, 'result.json')
+    
     with open(out_path, "w") as f:
         json.dump(scores, f, ensure_ascii=False, indent=4)
+    
+    print(json.dumps(scores, indent=2))
