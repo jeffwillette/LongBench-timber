@@ -40,6 +40,9 @@ def parse_args(args=None):
     if args.method in ['streaming_llm', 'hip']:
         assert args.k is not None, 'sparse attention require k'
     
+    assert args.method == ATTENTION_METHOD
+    assert args.k == HIP_K
+    
     return args
 
 # This is the customized building prompt for chat models
