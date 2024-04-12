@@ -58,7 +58,7 @@ def build_chat(tokenizer, prompt, model_name):
         conv.append_message(conv.roles[1], None)
         prompt = conv.get_prompt()
     elif "llama2" in model_name:
-        prompt = f"[INST]{prompt}[/INST]"
+        prompt = f"[INST]\n{prompt}\n[/INST]\n\n"
     elif "xgen" in model_name:
         header = (
             "A chat between a curious human and an artificial intelligence assistant. "
