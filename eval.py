@@ -107,9 +107,9 @@ if __name__ == '__main__':
         pred_root_name = 'pred'
     
     if args.method == 'none':
-        path = f"{pred_root_name}/{args.model}_{args.method}"
+        path = f"{pred_root_name}/{args.model}_{args.method}/"
     elif args.method in ['streaming_llm', 'hip']:
-        path = f"{pred_root_name}/{args.model}_{args.method}_k{args.k}"
+        path = f"{pred_root_name}/{args.model}_{args.method}_k{args.k}/"
     else:
         raise Exception()
     
