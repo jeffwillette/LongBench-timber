@@ -25,6 +25,7 @@ def parse_args(args=None):
         "chatglm3-6b-32k", 
         "vicuna-v1.5-7b-16k",
         "llama2-7b-chat-32k",
+        "llama2-13b-chat-32k",
         "qwen2-14b-chat-32k",
     ])
     parser.add_argument('--e', action='store_true', help="Evaluate on LongBench-E")
