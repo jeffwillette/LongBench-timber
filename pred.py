@@ -313,7 +313,8 @@ if __name__ == '__main__':
         else:
             raise Exception()
         
-        pred_root = f"pred/{model_name}_{args.method}_k{args.k}"
+        # pred_root = f"pred/{model_name}_{args.method}_k{args.k}"
+        
         os.makedirs(pred_root, exist_ok=True)
         out_path = os.path.join(pred_root, f'{dataset}.jsonl')
         
