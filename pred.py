@@ -2,7 +2,7 @@ import os
 from datasets import load_dataset
 import torch
 import json
-from transformers import AutoTokenizer, LlamaTokenizer, LlamaForCausalLM, AutoModelForCausalLM, AutoConfig
+from transformers import AutoTokenizer, LlamaTokenizer, AutoModelForCausalLM, AutoConfig
 from tqdm import tqdm
 import numpy as np
 import random
@@ -10,6 +10,9 @@ import argparse
 from llama_flash_attn_monkey_patch import replace_llama_attn_with_flash_attn
 import torch.distributed as dist
 import torch.multiprocessing as mp
+
+from timber.models.modeling_llama import LlamaForCausalLM
+from timber.models.qwen.modeling_qwen2 import Qwen2ForCausalLM
 
 from vllm import LLM, SamplingParams
 
@@ -191,7 +194,12 @@ def load_model_and_tokenizer(path, model_name, device, seq_len):
         config = AutoConfig.from_pretrained(path)
         config.attn_implementation = config._attn_implementation = 'sdpa'
         config.max_position_embeddings = 32768
-        model = LlamaForCausalLM.from_pretrained(
+        
+        ModelClass = LlamaForCausalLM
+        if 'qwen2' in model_name:
+            ModelClass = Qwen2ForCausalLM
+        
+        model = ModelClass.from_pretrained(
             path,
             config=config,
             torch_dtype=torch.bfloat16,
@@ -199,11 +207,14 @@ def load_model_and_tokenizer(path, model_name, device, seq_len):
             device_map={'':device}
         )
         
+        num_patched = 0
         for m in model.modules():
             if isinstance(m, LlamaCustomAttention):
+                assert hasattr(m, 'attention_method')
                 m.attention_method = 'streaming_llm'
                 m.tree_k = HIP_K
-                print(m.attention_method, m.tree_k, 'patched')
+                num_patched += 1
+        assert num_patched > 0
         
         model.eval()
     else:
