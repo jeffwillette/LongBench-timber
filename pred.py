@@ -107,7 +107,7 @@ def get_pred(
         model, tokenizer = load_model_and_tokenizer(model2path[model_name], model_name, device)
     
     with open(out_path, "w", encoding="utf-8") as f:
-        for json_obj in tqdm(data):
+        for json_obj in tqdm(data, desc=dataset):
             prompt = prompt_format.format(**json_obj)
             # truncate to fit max_length (we suggest truncate in the middle, since the left and right side may contain crucial instructions)
             tokenized_prompt = tokenizer(prompt, truncation=False, return_tensors="pt").input_ids[0]
