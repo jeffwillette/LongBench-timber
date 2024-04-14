@@ -200,6 +200,7 @@ def load_model_and_tokenizer(path, model_name, device, seq_len):
             if isinstance(m, LlamaCustomAttention):
                 m.attention_method = 'streaming_llm'
                 m.tree_k = HIP_K
+                print(m.attention_method, m.tree_k, 'patched')
         
         model.eval()
     else:
