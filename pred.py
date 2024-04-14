@@ -190,6 +190,7 @@ def load_model_and_tokenizer(path, model_name, device, seq_len):
         
         config = AutoConfig.from_pretrained(path)
         config.attn_implementation = config._attn_implementation = 'sdpa'
+        config.max_position_embeddings = 32768
         model = LlamaForCausalLM.from_pretrained(
             path,
             config=config,
