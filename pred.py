@@ -25,6 +25,8 @@ def parse_args(args=None):
         "chatglm3-6b-32k", 
         "vicuna-v1.5-7b-16k",
         "llama2-7b-chat-32k",
+        "llama2-13b-chat-32k",
+        "qwen2-14b-chat-32k",
     ])
     parser.add_argument('--e', action='store_true', help="Evaluate on LongBench-E")
     parser.add_argument('--method', required=True, type=str, choices=[
@@ -188,6 +190,7 @@ def load_model_and_tokenizer(path, model_name, device, seq_len):
         
         config = AutoConfig.from_pretrained(path)
         config.attn_implementation = config._attn_implementation = 'sdpa'
+        config.max_position_embeddings = 32768
         model = LlamaForCausalLM.from_pretrained(
             path,
             config=config,
@@ -312,7 +315,8 @@ if __name__ == '__main__':
         else:
             raise Exception()
         
-        pred_root = f"pred/{model_name}_{args.method}_k{args.k}"
+        # pred_root = f"pred/{model_name}_{args.method}_k{args.k}"
+        
         os.makedirs(pred_root, exist_ok=True)
         out_path = os.path.join(pred_root, f'{dataset}.jsonl')
         
