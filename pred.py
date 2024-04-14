@@ -190,6 +190,7 @@ def load_model_and_tokenizer(path, model_name, device, seq_len):
     
     if ATTENTION_METHOD == 'streaming_llm':
         from timber.models.modeling_llama import LlamaCustomAttention
+        from timber.models.qwen.modeling_qwen2 import Qwen2CustomAttention
         
         config = AutoConfig.from_pretrained(path)
         config.attn_implementation = config._attn_implementation = 'sdpa'
@@ -209,7 +210,7 @@ def load_model_and_tokenizer(path, model_name, device, seq_len):
         
         num_patched = 0
         for m in model.modules():
-            if isinstance(m, LlamaCustomAttention):
+            if isinstance(m, (LlamaCustomAttention, Qwen2CustomAttention)):
                 assert hasattr(m, 'attention_method')
                 m.attention_method = 'streaming_llm'
                 m.tree_k = HIP_K
