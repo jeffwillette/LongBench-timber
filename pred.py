@@ -30,6 +30,7 @@ def parse_args(args=None):
         "llama2-7b-chat-32k",
         "llama2-13b-chat-32k",
         "qwen2-14b-chat-32k",
+        "qwen2-7b-chat-32k",
     ])
     parser.add_argument('--e', action='store_true', help="Evaluate on LongBench-E")
     parser.add_argument('--method', required=True, type=str, choices=[
