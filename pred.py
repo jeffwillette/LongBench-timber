@@ -31,6 +31,8 @@ def parse_args(args=None):
         "llama2-13b-chat-32k",
         "qwen2-14b-chat-32k",
         "qwen2-7b-chat-32k",
+        "llama3-8b-8k",
+        "llama3-8b-16k",
     ])
     parser.add_argument('--e', action='store_true', help="Evaluate on LongBench-E")
     parser.add_argument('--method', required=True, type=str, choices=[
@@ -75,6 +77,8 @@ def build_chat(tokenizer, prompt, model_name):
         prompt = f"<|User|>:{prompt}<eoh>\n<|Bot|>:"
     elif "qwen2" in model_name:
         prompt = f'<|im_start|>system\nYou are a helpful assistant<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n'
+    elif "llama3" in model_name:
+        prompt = f'<|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n{prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n'
     return prompt
 
 def post_process(response, model_name):
