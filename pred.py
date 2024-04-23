@@ -90,6 +90,20 @@ def post_process(response, model_name):
 
 ATTENTION_METHOD = os.getenv('ATTENTION_METHOD', 'none')
 HIP_K = int(os.getenv('HIP_K', '512'))
+import transformers
+
+class StoppingCriteriaSub(transformers.StoppingCriteria):
+    def __init__(self, stops = [], tokenizer = None):
+        super().__init__()
+        self.tokenizer = tokenizer
+        self.stops = [stop.to("cuda") for stop in stops]
+
+    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor):
+        last_token = input_ids[0][-1]
+        for stop in self.stops:
+            if self.tokenizer.decode(stop) == self.tokenizer.decode(last_token):
+                return True
+        return False
 
 def get_pred(
     rank, 
@@ -146,15 +160,23 @@ def get_pred(
                             eos_token_id=[tokenizer.eos_token_id, tokenizer.encode("\n", add_special_tokens=False)[-1]],
                         )[0]
                 else:
+                    stop_words = ["<|eot_id|>"]
+                    stop_words_ids = [tokenizer(stop_word, return_tensors='pt', add_special_tokens=False)['input_ids'].squeeze() for stop_word in stop_words]
+                    stopping_criteria = transformers.StoppingCriteriaList([StoppingCriteriaSub(stops=stop_words_ids, tokenizer=tokenizer)])
+                    
                     output = model.generate(
                         **input,
                         max_new_tokens=max_gen,
                         num_beams=1,
                         do_sample=False,
                         temperature=1.0,
+                        stopping_criteria=stopping_criteria,
                     )[0]
                 pred = tokenizer.decode(output[context_length:], skip_special_tokens=True)
             else:
+                stop = []
+                if 'llama3' in model_name:
+                    stop.append('<|eot_id|>')
                 sampling_params = SamplingParams(
                     temperature=1.0,
                     top_p=1.0,
@@ -164,6 +186,7 @@ def get_pred(
                     repetition_penalty=1.0,
                     ignore_eos=False,
                     skip_special_tokens=True,
+                    stop=stop,
                 )
                 
                 prompt = tokenizer.decode(input.input_ids[0], skip_special_tokens=True)
