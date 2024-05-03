@@ -227,7 +227,7 @@ def get_pred(
                     ])
 
                     input_ids = input["input_ids"]
-                    input_ids = input_ids[:, :50]  # for debugging
+                    # input_ids = input_ids[:, :50]  # for debugging
                     # mask = input["attention_mask"]
                     # **input,
                     output = model.generate(
@@ -306,7 +306,7 @@ def load_model_and_tokenizer(path, model_name, device, seq_len, args):
         config._cascades = args.cascades
         config._window = args.window
         config._cascade_func = "pow2"
-
+        config._head_reduction = "mean"
         config.max_position_embeddings = 32768
 
         ModelClass = LlamaForCausalLM
@@ -320,8 +320,9 @@ def load_model_and_tokenizer(path, model_name, device, seq_len, args):
             # load_in_4bit=True,
             device_map={'': device},
         )
-
         model.model.setup_caches()
+
+        # model = torch.compile(model, mode="max-autotune", fullgraph=False)
 
         model.eval()
     else:
@@ -399,12 +400,12 @@ if __name__ == '__main__':
         #             "dureader", "gov_report", "qmsum", "multi_news", "vcsum", "trec", "triviaqa", "samsum", "lsht", \
         #             "passage_count", "passage_retrieval_en", "passage_retrieval_zh", "lcc", "repobench-p"]
         datasets = [
+            'multi_news',
             'narrativeqa',
             'qasper',
             'hotpotqa',
             '2wikimqa',
             'gov_report',
-            'multi_news',
         ]
 
     # we design specific prompt format and max generation length for each task, feel free to modify them to optimize model output

@@ -13,9 +13,20 @@ PYTHONPATH=/c2/jeff/tree-attention/ \
     python pred.py \
     --sinks 4 \
     --cascades 4 \
-    --window 2048 \
+    --window 1024 \
     --model llama2-7b-chat-32k
-
+    # --model llama1.3b
+ 
+ 
+PYTHONPATH=/c2/jeff/tree-attention/ \
+    ATTENTION_METHOD=streaming_llm \
+    CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
+    python pred.py \
+    --sinks 4 \
+    --cascades 1 \
+    --window 1024 \
+    --model llama2-7b-chat-32k
+    # --model llama1.3b
 
 PYTHONPATH=/c2/jeff/tree-attention/ \
     ATTENTION_METHOD=streaming_llm \
@@ -23,9 +34,9 @@ PYTHONPATH=/c2/jeff/tree-attention/ \
     python pred.py \
     --sinks 4 \
     --cascades 4 \
-    --window 2048 \
-    --model llama2-7b-chat-32k
-
+    --window 1024 \
+    --model qwen2-7b-chat-32k
+    # --model qwen0.5b
 
 PYTHONPATH=/c2/jeff/tree-attention/ \
     ATTENTION_METHOD=streaming_llm \
@@ -33,17 +44,6 @@ PYTHONPATH=/c2/jeff/tree-attention/ \
     python pred.py \
     --sinks 4 \
     --cascades 1 \
-    --window 2048 \
-    --model qwen2-7b-chat-32k
-    # --model qwen0.5b
-
-
-PYTHONPATH=/c2/jeff/tree-attention/ \
-    ATTENTION_METHOD=streaming_llm \
-    CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
-    python pred.py \
-    --sinks 4 \
-    --cascades 4 \
-    --window 2048 \
+    --window 1024 \
     --model qwen2-7b-chat-32k
     # --model qwen0.5b
