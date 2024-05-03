@@ -39,49 +39,63 @@ dataset2metric = {
     "repobench-p": code_sim_score,
 }
 
+
 def parse_args(args=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, default=None, choices=[
-        "llama2-7b-chat-4k", 
-        "longchat-v1.5-7b-32k", 
-        "xgen-7b-8k", 
-        "internlm-7b-8k", 
-        "chatglm2-6b", 
-        "chatglm2-6b-32k", 
-        "chatglm3-6b-32k", 
-        "vicuna-v1.5-7b-16k",
-        "llama2-7b-chat-32k",
-        "llama2-13b-chat-32k",
-        "qwen2-14b-chat-32k",
-        "qwen2-7b-chat-32k",
-        "llama3-8b-8k",
-        "llama3-8b-16k",
-        "llama3-8b-262k",
-        "phi3-3b-128k",
-    ])
-    parser.add_argument('--e', action='store_true', help="Evaluate on LongBench-E")
-    parser.add_argument('--method', required=True, type=str, choices=[
-        'none',
-        'hip',
-        'streaming_llm',
-    ])
+    parser.add_argument('--model',
+                        type=str,
+                        default=None,
+                        choices=[
+                            "llama2-7b-chat-4k",
+                            "longchat-v1.5-7b-32k",
+                            "xgen-7b-8k",
+                            "internlm-7b-8k",
+                            "chatglm2-6b",
+                            "chatglm2-6b-32k",
+                            "chatglm3-6b-32k",
+                            "vicuna-v1.5-7b-16k",
+                            "llama2-7b-chat-32k",
+                            "llama2-13b-chat-32k",
+                            "qwen2-14b-chat-32k",
+                            "qwen2-7b-chat-32k",
+                            "llama3-8b-8k",
+                            "llama3-8b-16k",
+                            "llama3-8b-262k",
+                            "phi3-3b-128k",
+                        ])
+    parser.add_argument('--e',
+                        action='store_true',
+                        help="Evaluate on LongBench-E")
+    parser.add_argument('--method',
+                        required=True,
+                        type=str,
+                        choices=[
+                            'none',
+                            'hip',
+                            'streaming_llm',
+                        ])
     parser.add_argument('--k', default=None, type=int)
-    
+
     args = parser.parse_args(args)
-    
+
     if args.method in ['streaming_llm', 'hip']:
         assert args.k is not None, 'sparse attention require k'
-    
+
     return args
+
 
 def scorer_e(dataset, predictions, answers, lengths, all_classes):
     scores = {"0-4k": [], "4-8k": [], "8k+": []}
-    for (prediction, ground_truths, length) in zip(predictions, answers, lengths):
+    for (prediction, ground_truths, length) in zip(predictions, answers,
+                                                   lengths):
         score = 0.
         if dataset in ["trec", "triviaqa", "samsum", "lsht"]:
             prediction = prediction.lstrip('\n').split('\n')[0]
         for ground_truth in ground_truths:
-            score = max(score, dataset2metric[dataset](prediction, ground_truth, all_classes=all_classes))
+            score = max(
+                score, dataset2metric[dataset](prediction,
+                                               ground_truth,
+                                               all_classes=all_classes))
         if length < 4000:
             scores["0-4k"].append(score)
         elif length < 8000:
@@ -92,6 +106,7 @@ def scorer_e(dataset, predictions, answers, lengths, all_classes):
         scores[key] = round(100 * np.mean(scores[key]), 2)
     return scores
 
+
 def scorer(dataset, predictions, answers, all_classes):
     total_score = 0.
     for (prediction, ground_truths) in zip(predictions, answers):
@@ -99,27 +114,31 @@ def scorer(dataset, predictions, answers, all_classes):
         if dataset in ["trec", "triviaqa", "samsum", "lsht"]:
             prediction = prediction.lstrip('\n').split('\n')[0]
         for ground_truth in ground_truths:
-            score = max(score, dataset2metric[dataset](prediction, ground_truth, all_classes=all_classes))
+            score = max(
+                score, dataset2metric[dataset](prediction,
+                                               ground_truth,
+                                               all_classes=all_classes))
         total_score += score
     return round(100 * total_score / len(predictions), 2)
 
+
 if __name__ == '__main__':
     args = parse_args()
-    
+
     scores = dict()
     pred_root_name = None
     if args.e:
         pred_root_name = 'pred_e'
     else:
         pred_root_name = 'pred'
-    
+
     if args.method == 'none':
         path = f"{pred_root_name}/{args.model}_{args.method}/"
     elif args.method in ['streaming_llm', 'hip']:
         path = f"{pred_root_name}/{args.model}_{args.method}_k{args.k}/"
     else:
         raise Exception()
-    
+
     all_files = os.listdir(path)
     print("Evaluating on:", all_files)
     for filename in all_files:
@@ -136,14 +155,15 @@ if __name__ == '__main__':
                 if "length" in data:
                     lengths.append(data["length"])
         if args.e:
-            score = scorer_e(dataset, predictions, answers, lengths, all_classes)
+            score = scorer_e(dataset, predictions, answers, lengths,
+                             all_classes)
         else:
             score = scorer(dataset, predictions, answers, all_classes)
         scores[dataset] = score
-    
+
     out_path = os.path.join(path, 'result.json')
-    
+
     with open(out_path, "w") as f:
         json.dump(scores, f, ensure_ascii=False, indent=4)
-    
+
     print(json.dumps(scores, indent=2))
