@@ -74,12 +74,11 @@ def parse_args(args=None):
                             'hip',
                             'streaming_llm',
                         ])
-    parser.add_argument('--k', default=None, type=int)
+    parser.add_argument('--sinks', type=int, default=None)
+    parser.add_argument('--cascades', type=int, default=None)
+    parser.add_argument('--window', type=int, default=None)
 
     args = parser.parse_args(args)
-
-    if args.method in ['streaming_llm', 'hip']:
-        assert args.k is not None, 'sparse attention require k'
 
     return args
 
@@ -135,25 +134,36 @@ if __name__ == '__main__':
     if args.method == 'none':
         path = f"{pred_root_name}/{args.model}_{args.method}/"
     elif args.method in ['streaming_llm', 'hip']:
-        path = f"{pred_root_name}/{args.model}_{args.method}_k{args.k}/"
+        # path = f"{pred_root_name}/{args.model}_{args.method}_k{args.k}/"
+        path = f"{pred_root_name}/{args.model}_{args.method}_window_{args.window}_cascades_{args.cascades}_sinks_{args.sinks}"
     else:
         raise Exception()
 
     all_files = os.listdir(path)
+    all_files = [f for f in all_files if "result.json" not in f]
     print("Evaluating on:", all_files)
-    for filename in all_files:
-        if not filename.endswith("jsonl"):
-            continue
+
+    print("splitting files by dataset")
+    datasets = [f.split("-")[0] for f in all_files]
+    datasets = list(set(datasets))
+
+    dataset_files = [[f for f in all_files if d in f] for d in datasets]
+    print(dataset_files)
+
+    for dataset_f in dataset_files:
         predictions, answers, lengths = [], [], []
-        dataset = filename.split('.')[0]
-        with open(f"{path}{filename}", "r", encoding="utf-8") as f:
-            for line in f:
-                data = json.loads(line)
-                predictions.append(data["pred"])
-                answers.append(data["answers"])
-                all_classes = data["all_classes"]
-                if "length" in data:
-                    lengths.append(data["length"])
+        for filename in dataset_f:
+            if not filename.endswith("jsonl"):
+                continue
+            dataset = filename.split('-')[0]
+            with open(f"{path}/{filename}", "r", encoding="utf-8") as f:
+                for line in f:
+                    data = json.loads(line)
+                    predictions.append(data["pred"])
+                    answers.append(data["answers"])
+                    all_classes = data["all_classes"]
+                    if "length" in data:
+                        lengths.append(data["length"])
         if args.e:
             score = scorer_e(dataset, predictions, answers, lengths,
                              all_classes)
@@ -161,6 +171,7 @@ if __name__ == '__main__':
             score = scorer(dataset, predictions, answers, all_classes)
         scores[dataset] = score
 
+    print("writing output")
     out_path = os.path.join(path, 'result.json')
 
     with open(out_path, "w") as f:

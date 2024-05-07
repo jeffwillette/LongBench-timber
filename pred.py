@@ -210,7 +210,11 @@ def get_pred(
                             ],
                         )[0]
                 else:
-                    stop_words = ["<|eot_id|>"]
+                    if 'llama' in model_name:
+                        stop_words = ["<|eot_id|>"]
+                    elif 'qwen' in model_name:
+                        stop_words = ["<|im_end|>"]
+
                     stop_words_ids = [
                         tokenizer(
                             stop_word,
@@ -228,6 +232,7 @@ def get_pred(
 
                     input_ids = input["input_ids"]
                     # input_ids = input_ids[:, :50]  # for debugging
+                    # context_length = 50
                     # mask = input["attention_mask"]
                     # **input,
                     output = model.generate(
@@ -240,6 +245,7 @@ def get_pred(
                         stopping_criteria=stopping_criteria,
                         use_cache=False,
                     )[0]
+
                 pred = tokenizer.decode(output[context_length:],
                                         skip_special_tokens=True)
             else:
