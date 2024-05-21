@@ -12,8 +12,8 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 import transformers
 
-from timber.models.modeling_llama import LlamaForCausalLM
-from timber.models.qwen.modeling_qwen2 import Qwen2ForCausalLM
+from cascade.models.modeling_llama import LlamaForCausalLM
+from cascade.models.qwen.modeling_qwen2 import Qwen2ForCausalLM
 
 # from vllm import LLM, SamplingParams
 
