@@ -1,4 +1,5 @@
 {
+    "llama3.1-8b-instruct": "/d1/dataset/llama/models/llama_v3.1/Meta-Llama-3.1-8B-Instruct",
     "llama2-7b-chat-4k": "meta-llama/Llama-2-7b-chat-hf",
     "longchat-v1.5-7b-32k": "lmsys/longchat-7b-v1.5-32k",
     "xgen-7b-8k": "Salesforce/xgen-7b-8k-inst",
@@ -12,6 +13,7 @@
     "llama2-13b-chat-32k": "Yukang/Llama-2-13b-chat-longlora-32k-sft",
     "qwen2-14b-chat-32k": "Qwen/Qwen1.5-14B-Chat",
     "qwen2-7b-chat-32k": "Qwen/Qwen1.5-7B-Chat",
+    "qwen2-7b-instruct": "Qwen/Qwen2-7B-Instruct",
     "llama3-8b-8k": "unsloth/llama-3-8b-Instruct",
     "llama3-8b-16k": "mattshumer/Llama-3-8B-16K",
     "llama3-8b-262k": "gradientai/Llama-3-8B-Instruct-262k",

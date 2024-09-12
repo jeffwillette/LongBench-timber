@@ -58,9 +58,11 @@ def parse_args(args=None):
                             "llama2-13b-chat-32k",
                             "qwen2-14b-chat-32k",
                             "qwen2-7b-chat-32k",
+                            "qwen2-7b-instruct",
                             "llama3-8b-8k",
                             "llama3-8b-16k",
                             "llama3-8b-262k",
+                            "llama3.1-8b-instruct",
                             "phi3-3b-128k",
                         ])
     parser.add_argument('--e',
@@ -72,11 +74,13 @@ def parse_args(args=None):
                         choices=[
                             'none',
                             'hip',
+                            'vanilla',
                             'streaming_llm',
                         ])
     parser.add_argument('--sinks', type=int, default=None)
     parser.add_argument('--cascades', type=int, default=None)
     parser.add_argument('--window', type=int, default=None)
+    parser.add_argument('--comment', type=str, default="none")
 
     args = parser.parse_args(args)
 
@@ -133,9 +137,11 @@ if __name__ == '__main__':
 
     if args.method == 'none':
         path = f"{pred_root_name}/{args.model}_{args.method}/"
+    elif args.method in ['vanilla']:
+        path = f"{pred_root_name}/{args.model}_{args.method}_comment_{args.comment}"
     elif args.method in ['streaming_llm', 'hip']:
         # path = f"{pred_root_name}/{args.model}_{args.method}_k{args.k}/"
-        path = f"{pred_root_name}/{args.model}_{args.method}_window_{args.window}_cascades_{args.cascades}_sinks_{args.sinks}"
+        path = f"{pred_root_name}/{args.model}_{args.method}_window_{args.window}_cascades_{args.cascades}_sinks_{args.sinks}_comment_{args.comment}"
     else:
         raise Exception()
 
