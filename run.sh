@@ -1,4 +1,4 @@
-# #!/bin/bash
+#!/bin/bash
 
 model=invalid-model-name
 method=streaming_llm
@@ -27,7 +27,7 @@ fi
 
 for i in "${!CASCADES[@]}";
 do 
-    PYTHONPATH=/c2/jeff/cascading_cache_2/ \
+    PYTHONPATH=/Data3/cascading_cache_2/ \
         ATTENTION_METHOD=$ATTENTION_METHOD \
         CUDA_VISIBLE_DEVICES=$GPU \
         python pred.py \
