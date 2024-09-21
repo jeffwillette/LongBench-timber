@@ -168,7 +168,7 @@ def get_pred(
                                      return_tensors="pt").input_ids[0]
 
         if args.method == ("vanilla" and "truncate" in args.comment):
-            max_length = int(2 ** int(np.log2(tokenized_prompt.size(0) / 4) // 1)) - max_gen
+            max_length = int(2 ** int(np.log2(tokenized_prompt.size(0) / 4) // 1))
             # print(f"{tokenized_prompt.size(0)=} {max_length=}")
 
         if "chatglm3" in model_name:
@@ -285,7 +285,7 @@ def get_pred(
 
             if args.method == "bigbird":
                 print(f"input ids before setting max seq length in bigbird generate: {input['input_ids'].size(1)=}")
-                max_seq_len = int(2 ** int(np.log2(input['input_ids'].size(1) / 4) // 1)) - max_gen
+                max_seq_len = int(2 ** int(np.log2(input['input_ids'].size(1) / 4) // 1))
                 max_seq_len = min(max_seq_len, 32768)
                 print(f"{max_seq_len=}")
                 for lyr in mdl.layers:
