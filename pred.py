@@ -1,6 +1,7 @@
 import os
 from datasets import load_dataset
 import torch
+import deepspeed
 import json
 from cascade.models.cascading_cache import CascadingKVCache
 from transformers import AutoTokenizer, AutoConfig
@@ -18,7 +19,6 @@ from cascade.models.llama.modeling_llama import LlamaForCausalLM
 from cascade.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM
 from transformers.generation.utils import GenerateDecoderOnlyOutput, GenerateEncoderDecoderOutput
 
-from vllm import LLM, SamplingParams
 # from vllm.distributed.parallel_state import destroy_model_parallel, destroy_distributed_environment
 
 
@@ -56,11 +56,12 @@ def parse_args(args=None):
     parser.add_argument('--method',
                         type=str,
                         default=os.getenv("ATTENTION_METHOD", "none"),
-                        choices=['none', 'vanilla', 'hip', 'streaming_llm',])
+                        choices=['none', 'vanilla', 'hip', 'streaming_llm', 'bigbird'])
     parser.add_argument('--sinks', type=int, default=None)
     parser.add_argument('--cascades', type=int, default=None)
     parser.add_argument('--window', type=int, default=None)
     parser.add_argument('--comment', type=str, default="none")
+    parser.add_argument('--local_rank', default=0, type=int)
 
     parser.add_argument('--stride', type=int, default=None)
 
@@ -72,7 +73,7 @@ def parse_args(args=None):
         assert args.window is not None
 
     assert args.method == ATTENTION_METHOD
-    args.world_size = 1
+    args.world_size = torch.cuda.device_count()
 
     return args
 
@@ -157,203 +158,189 @@ def get_pred(
         max_length,
         args,
     )
+    mdl = model.module.model
 
-    with open(out_path, "w", encoding="utf-8") as f:
-        for json_obj in tqdm(data, desc=dataset):
-            prompt = prompt_format.format(**json_obj)
-            # truncate to fit max_length (we suggest truncate in the middle, since the left and right side may contain crucial instructions)
-            tokenized_prompt = tokenizer(prompt,
-                                         truncation=False,
-                                         return_tensors="pt").input_ids[0]
+    for json_obj in tqdm(data, desc=dataset):
+        prompt = prompt_format.format(**json_obj)
+        # truncate to fit max_length (we suggest truncate in the middle, since the left and right side may contain crucial instructions)
+        tokenized_prompt = tokenizer(prompt,
+                                     truncation=False,
+                                     return_tensors="pt").input_ids[0]
 
-            if args.method == "vanilla" and "truncate" in args.comment:
-                max_length = int(2 ** int(np.log2(tokenized_prompt.size(0) / 4) // 1)) - max_gen
-                # print(f"{tokenized_prompt.size(0)=} {max_length=}")
+        if args.method == ("vanilla" and "truncate" in args.comment):
+            max_length = int(2 ** int(np.log2(tokenized_prompt.size(0) / 4) // 1)) - max_gen
+            # print(f"{tokenized_prompt.size(0)=} {max_length=}")
 
-            if "chatglm3" in model_name:
-                tokenized_prompt = tokenizer(
-                    prompt,
-                    truncation=False,
-                    return_tensors="pt",
-                    add_special_tokens=False).input_ids[0]
-            if len(tokenized_prompt) > max_length:
-                half = int(max_length / 2)
-                # if we are truncating to be equivalent with the cascade models, reset the halfway mark
-                prompt = tokenizer.decode(tokenized_prompt[:half], skip_special_tokens=True) + \
-                    tokenizer.decode(tokenized_prompt[-half:], skip_special_tokens=True)
+        if "chatglm3" in model_name:
+            tokenized_prompt = tokenizer(
+                prompt,
+                truncation=False,
+                return_tensors="pt",
+                add_special_tokens=False).input_ids[0]
+        if len(tokenized_prompt) > max_length:
+            half = int(max_length / 2)
+            # if we are truncating to be equivalent with the cascade models, reset the halfway mark
+            prompt = tokenizer.decode(tokenized_prompt[:half], skip_special_tokens=True) + \
+                tokenizer.decode(tokenized_prompt[-half:], skip_special_tokens=True)
 
-            if dataset not in ["trec", "triviaqa", "samsum", "lsht", "lcc", "repobench-p"]:  # chat models are better off without build prompts on these tasks
-                prompt = build_chat(tokenizer, prompt, model_name)
-            if "chatglm3" in model_name:
-                if dataset in ["trec", "triviaqa", "samsum", "lsht", "lcc", "repobench-p"]:
-                    input = tokenizer(prompt, truncation=False, return_tensors="pt").to(device)
-                else:
-                    input = prompt.to(device)
+        if dataset not in ["trec", "triviaqa", "samsum", "lsht", "lcc", "repobench-p"]:  # chat models are better off without build prompts on these tasks
+            prompt = build_chat(tokenizer, prompt, model_name)
+        if "chatglm3" in model_name:
+            if dataset in ["trec", "triviaqa", "samsum", "lsht", "lcc", "repobench-p"]:
+                input = tokenizer(prompt, truncation=False, return_tensors="pt").to("cuda")
             else:
-                input = tokenizer(prompt, truncation=False, return_tensors="pt").to(device)
-                # print(f"len after slicing: {input['input_ids'].size()=}")
-            context_length = input.input_ids.shape[-1]
+                input = prompt.to(device)
+        else:
+            input = tokenizer(prompt, truncation=False, return_tensors="pt").to("cuda")
+            # print(f"len after slicing: {input['input_ids'].size()=}")
+        context_length = input.input_ids.shape[-1]
 
-            if ATTENTION_METHOD == 'streaming_llm':
-                if dataset == "samsum":  # prevent illegal output on samsum (model endlessly repeat "\nDialogue"), might be a prompting issue
-                    raise Exception()
-                    with torch.inference_mode():
-                        output = model.generate(
-                            **input,
-                            max_new_tokens=max_gen,
-                            num_beams=1,
-                            do_sample=False,
-                            temperature=1.0,
-                            min_length=context_length + 1,
-                            eos_token_id=[
-                                tokenizer.eos_token_id,
-                                tokenizer.encode("\n",
-                                                 add_special_tokens=False)[-1]
-                            ],
-                        )[0]
-                else:
-                    if 'llama' in model_name:
-                        stop_words = ["<|eot_id|>"]
-                    elif 'qwen' in model_name:
-                        stop_words = ["<|im_end|>"]
-
-                    stop_words_ids = [
-                        tokenizer(
-                            stop_word,
-                            return_tensors='pt',
-                            add_special_tokens=False)['input_ids'].squeeze()
-                        for stop_word in stop_words
-                    ]
-                    stopping_criteria = transformers.StoppingCriteriaList([
-                        StoppingCriteriaSub(
-                            stops=stop_words_ids,
-                            tokenizer=tokenizer,
-                            device=device,
-                        )
-                    ])
-
-                    input_ids = input["input_ids"]
-                    # input_ids = input_ids[:, :50]  # for debugging
-                    # context_length = 50
-                    # mask = input["attention_mask"]
-
-                    max_seq_len = int(2 ** int(np.log2(input_ids.size(1) / 4) // 1))
-                    max_seq_len = min(max_seq_len, max_length)
-                    print(f"{max_seq_len=}")
-                    window = max_seq_len // args.cascades
-                    mdl = model.model
-
-                    # window = mdl.config._window // mdl.config._cascades
-                    # max_seq_len = mdl.config._window
-
-                    past_key_values = CascadingKVCache(
-                        window,
-                        num_sink_tokens=mdl.config._sinks,
-                        max_batch_size=mdl.config._batch_size,
-                        heads=mdl.config.num_key_value_heads // args.world_size,
-                        dim=mdl.config.hidden_size // mdl.config.num_attention_heads,
-                        max_seq_len=max_seq_len,
-                        dtype=torch.float16,
-                        device=mdl.embed_tokens.weight.device,
-                        cascade_func=mdl.config._cascade_func,
-                        head_reduction=mdl.config._head_reduction,
-                        layers=len(mdl.layers),
-                    )
-
+        if ATTENTION_METHOD == 'streaming_llm':
+            if dataset == "samsum":  # prevent illegal output on samsum (model endlessly repeat "\nDialogue"), might be a prompting issue
+                raise Exception()
+                with torch.inference_mode():
                     output = model.generate(
-                        input_ids=input_ids,
-                        # attention_mask=mask,
+                        **input,
                         max_new_tokens=max_gen,
                         num_beams=1,
                         do_sample=False,
                         temperature=1.0,
-                        stopping_criteria=stopping_criteria,
-                        use_cache=True,
-                        past_key_values=past_key_values,
+                        min_length=context_length + 1,
+                        eos_token_id=[
+                            tokenizer.eos_token_id,
+                            tokenizer.encode("\n",
+                                             add_special_tokens=False)[-1]
+                        ],
                     )[0]
-
-                pred = tokenizer.decode(output[context_length:],
-                                        skip_special_tokens=True)
-
-                past_key_values.reset()
-
             else:
                 if 'llama' in model_name:
                     stop_words = ["<|eot_id|>"]
                 elif 'qwen' in model_name:
                     stop_words = ["<|im_end|>"]
 
-                # HF Version: not using to keep everything equivalent
-                # stop_words_ids = [
-                #     tokenizer(
-                #         stop_word,
-                #         return_tensors='pt',
-                #         add_special_tokens=False)['input_ids'].squeeze()
-                #     for stop_word in stop_words
-                # ]
-                # stopping_criteria = transformers.StoppingCriteriaList([
-                #     StoppingCriteriaSub(
-                #         stops=stop_words_ids,
-                #         tokenizer=tokenizer,
-                #         device=device,
-                #     )
-                # ])
+                stop_words_ids = [
+                    tokenizer(
+                        stop_word,
+                        return_tensors='pt',
+                        add_special_tokens=False)['input_ids'].squeeze()
+                    for stop_word in stop_words
+                ]
+                stopping_criteria = transformers.StoppingCriteriaList([
+                    StoppingCriteriaSub(
+                        stops=stop_words_ids,
+                        tokenizer=tokenizer,
+                        device="cuda",
+                    )
+                ])
 
-                # input_ids = input["input_ids"]
-                # mdl = model.model
+                input_ids = input["input_ids"]
+                # input_ids = input_ids[:, :50]  # for debugging
+                # context_length = 50
+                # mask = input["attention_mask"]
 
-                # output = model.generate(
-                #     input_ids=input_ids,
-                #     # attention_mask=mask,
-                #     max_new_tokens=max_gen,
-                #     num_beams=1,
-                #     do_sample=False,
-                #     temperature=1.0,
-                #     stopping_criteria=stopping_criteria,
-                #     use_cache=True,
-                #     past_key_values=None,
-                # )[0]
+                max_seq_len = int(2 ** int(np.log2(input_ids.size(1) / 4) // 1))
+                max_seq_len = min(max_seq_len, max_length)
+                print(f"{max_seq_len=}")
+                window = max_seq_len // args.cascades
 
-                # pred = tokenizer.decode(output[context_length:],
-                #                         skip_special_tokens=True)
+                # window = mdl.config._window // mdl.config._cascades
+                # max_seq_len = mdl.config._window
 
-                # VLLM Version: not using to keep everything equivalent
+                past_key_values = CascadingKVCache(
+                    window,
+                    num_sink_tokens=mdl.config._sinks,
+                    max_batch_size=mdl.config._batch_size,
+                    heads=mdl.config.num_key_value_heads // args.world_size,
+                    dim=mdl.config.hidden_size // mdl.config.num_attention_heads,
+                    max_seq_len=max_seq_len,
+                    dtype=torch.float16,
+                    device=mdl.embed_tokens.weight.device,
+                    cascade_func=mdl.config._cascade_func,
+                    head_reduction=mdl.config._head_reduction,
+                    layers=len(mdl.layers),
+                )
 
-                sampling_params = SamplingParams(
+                output = model.generate(
+                    input_ids=input_ids,
+                    # attention_mask=mask,
+                    max_new_tokens=max_gen,
+                    num_beams=1,
+                    do_sample=False,
                     temperature=1.0,
-                    top_p=1.0,
-                    top_k=1,  # No sampling
-                    max_tokens=max_gen,
-                    frequency_penalty=0.0,
-                    repetition_penalty=1.0,
-                    ignore_eos=False,
-                    skip_special_tokens=True,
-                    stop=stop_words,
+                    stopping_criteria=stopping_criteria,
+                    use_cache=True,
+                    past_key_values=past_key_values,
+                )[0]
+
+            pred = tokenizer.decode(output[context_length:],
+                                    skip_special_tokens=True)
+
+            past_key_values.reset()
+
+        else:
+            if 'llama' in model_name:
+                stop_words = ["<|eot_id|>"]
+            elif 'qwen' in model_name:
+                stop_words = ["<|im_end|>"]
+
+            if args.method == "bigbird":
+                print(f"input ids before setting max seq length in bigbird generate: {input['input_ids'].size(1)=}")
+                max_seq_len = int(2 ** int(np.log2(input['input_ids'].size(1) / 4) // 1)) - max_gen
+                max_seq_len = min(max_seq_len, 32768)
+                print(f"{max_seq_len=}")
+                for lyr in mdl.layers:
+                    if args.method == "bigbird":
+                        lyr.self_attn.config._bb_window = max_seq_len
+                    elif args.method == "snapkv":
+                        lyr.self_attn.config.max_capacity_prompt = max_seq_len
+
+            stop_words_ids = [
+                tokenizer(
+                    stop_word,
+                    return_tensors='pt',
+                    add_special_tokens=False)['input_ids'].squeeze()
+                for stop_word in stop_words
+            ]
+            stopping_criteria = transformers.StoppingCriteriaList([
+                StoppingCriteriaSub(
+                    stops=stop_words_ids,
+                    tokenizer=tokenizer,
+                    device=device,
                 )
+            ])
 
-                prompt = tokenizer.decode(input.input_ids[0],
-                                          skip_special_tokens=True)
-                vllm_outputs = model.generate(
-                    prompt,
-                    sampling_params,
-                    use_tqdm=False,
-                )
-                pred = vllm_outputs[0].outputs[0].text
+            input_ids = input["input_ids"]
 
-            pred = post_process(pred, model_name)
+            output = model.generate(
+                input_ids=input_ids,
+                # attention_mask=mask,
+                max_new_tokens=max_gen,
+                num_beams=1,
+                do_sample=False,
+                temperature=1.0,
+                stopping_criteria=stopping_criteria,
+                use_cache=True,
+                past_key_values=None,
+            )[0]
 
-            json.dump(
-                {
-                    "pred": pred,
-                    "answers": json_obj["answers"],
-                    "all_classes": json_obj["all_classes"],
-                    "length": json_obj["length"]
-                },
-                f,
-                ensure_ascii=False)
-            f.write('\n')
-            f.flush()
-    # dist.destroy_process_group()
+            pred = tokenizer.decode(output[context_length:],
+                                    skip_special_tokens=True)
+
+        pred = post_process(pred, model_name)
+
+        if args.local_rank == 0:
+            with open(out_path, "a", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "pred": pred,
+                        "answers": json_obj["answers"],
+                        "all_classes": json_obj["all_classes"],
+                        "length": json_obj["length"]
+                    },
+                    f,
+                    ensure_ascii=False)
+                f.write('\n')
+                f.flush()
 
 
 def seed_everything(seed):
@@ -396,83 +383,46 @@ def load_model_and_tokenizer(path, model_name, device, seq_len, args):
             path,
             config=config,
             torch_dtype=torch.float16,
-            device_map={'': device},
+            device_map="cpu",
         )
         model = sample_monkeypatch(model)
 
-        # model = torch.compile(model, mode="max-autotune", fullgraph=False)
-
-        model.eval()
     else:
-        # config = AutoConfig.from_pretrained(path)
-        # config.attn_implementation = config._attn_implementation = 'flash_attention_2'
-        # config._method = "vanilla"
-        # # config.max_position_embeddings = 32768
+        config = AutoConfig.from_pretrained(path)
+        config.attn_implementation = config._attn_implementation = 'flash_attention_2'
+        if args.method == "bigbird":
+            config._method = "bigbird"
+        else:
+            config._method = "vanilla"
 
-        # model = ModelClass.from_pretrained(
-        #     path,
-        #     config=config,
-        #     torch_dtype=torch.float16,
-        #     device_map={'': device},
-        # )
-
-        # model.eval()
-        model = LLM(
+        model = ModelClass.from_pretrained(
             path,
-            max_num_seqs=1,
-            max_seq_len_to_capture=seq_len + 500,
-            max_model_len=seq_len + 500,
-            swap_space=0,
-            kv_cache_dtype='auto',
-            dtype='half',
-            gpu_memory_utilization=0.9,
-            tensor_parallel_size=torch.cuda.device_count(),
-            enforce_eager=os.environ.get('FORCE_EAGER', '0') == '1',
-            trust_remote_code=True,
+            config=config,
+            torch_dtype=torch.float16,
+            device_map="cpu",
         )
 
-    return model, tokenizer
+    model = deepspeed.init_inference(
+        model,
+        tensor_parallel={"tp_size": args.world_size},
+        replace_with_kernel_inject=False,
+        dtype=torch.float16,
+        max_out_tokens=seq_len,
+    )
 
-    # if "chatglm" in model_name or "internlm" in model_name or "xgen" in model_name:
-    #     tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
-    #     model = AutoModelForCausalLM.from_pretrained(path, trust_remote_code=True, torch_dtype=torch.bfloat16).to(device)
-    # elif "llama2" in model_name:
-    #     # replace_llama_attn_with_flash_attn()
-    #     tokenizer = LlamaTokenizer.from_pretrained(path)
-    #     config = AutoConfig.from_pretrained(path)
-    #     config.attn_implementation = config._attn_implementation = 'flash_attention_2'
-    #     model = LlamaForCausalLM.from_pretrained(
-    #         path,
-    #         config=config,
-    #         torch_dtype=torch.bfloat16,
-    #         load_in_4bit=True,
-    #         device_map={'':device}
-    #     )#.to(device)
-    # elif "longchat" in model_name or "vicuna" in model_name:
-    #     from fastchat.model import load_model
-    #     replace_llama_attn_with_flash_attn()
-    #     model, _ = load_model(
-    #         path,
-    #         device='cpu',
-    #         num_gpus=0,
-    #         load_8bit=False,
-    #         load_4bit=True,
-    #         cpu_offloading=False,
-    #         debug=False,
-    #     )
-    #     model = model.to(device)
-    #     model = model.bfloat16()
-    #     tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True, use_fast=False)
-    # model = model.eval()
-    # return model, tokenizer
+    model = model.cuda()
+    model.eval()
+
+    return model, tokenizer
 
 
 if __name__ == '__main__':
     seed_everything(42)
     args = parse_args()
 
-    # vllm will parallelize
-    world_size = len(os.getenv("CUDA_VISIBLE_DEVICES", "1").split(","))
+    # this is not the real world size since we are doing tensor parallel and do not want to
+    # parallelize over the dataset. Will set real world size in model loader
+    world_size = 1
     # mp.set_start_method('spawn', force=True)
 
     model2path = json.load(open("config/model2path.json", "r"))
@@ -482,6 +432,11 @@ if __name__ == '__main__':
 
     # define your model
     max_length = model2maxlen[model_name] if args.stride is None else args.stride
+    if args.method == "streaming_llm":
+        # for streaming llm, we will never run out of positional embeddings for the quarter-ctx experiment.
+        # as the longest prompt in longbench is 65,370. Therefore, the max prompt should be somewhere around 8K
+        # so set this max length for all streaming llm models which should not truncate the inputs.
+        max_length = 131072
 
     if args.e:
         datasets = ["qasper", "multifieldqa_en", "hotpotqa", "2wikimqa", "gov_report", "multi_news", \
@@ -516,7 +471,7 @@ if __name__ == '__main__':
             data = load_dataset('THUDM/LongBench', dataset, split='test')
             pred_root_name = 'pred'
 
-        if args.method == 'vanilla':
+        if args.method in ['vanilla', 'bigbird']:
             pred_root = f"{pred_root_name}/{model_name}_{args.method}_comment_{args.comment}"
         elif args.method in ['streaming_llm', 'hip']:
             pred_root = f"{pred_root_name}/{model_name}_{args.method}_window_{args.window}_cascades_{args.cascades}_sinks_{args.sinks}_comment_{args.comment}"

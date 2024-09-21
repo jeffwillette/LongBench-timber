@@ -1,52 +1,56 @@
 # #!/bin/bash
 
 model=invalid-model-name
-method=streaming_llm
-while getopts m:d:g: flag
+attention_method=streaming_llm
+port=63290
+while getopts m:d:g:p: flag
 do
     case "${flag}" in
         m) model=${OPTARG};;
-        d) method=${OPTARG};;
+        d) attention_method=${OPTARG};;
         g) gpu=${OPTARG};;
+        p) port=${OPTARG};;
     esac
 done
 
 WINDOW=16384
 CASCADES=(4 1)
 SINKS=64
-MODEL=$model
-GPU=$gpu
-ATTENTION_METHOD=$method
-# COMMENT=("quarter-ctx" "quarter-ctx")
-COMMENT=("tptest" "tptest")
+COMMENT=("quarter-ctx" "quarter-ctx")
 
-if [ "$ATTENTION_METHOD" = "vanilla" ]; then
+if [ "$attention_method" = "vanilla" ]; then
     CASCADES=(1 1)
     COMMENT=("vanilla-truncate" "vanilla-unconstrained")
+elif [ "$attention_method" = "bigbird" ]; then
+    CASCADES=(1)
+    COMMENT=("bigbird-quarter-ctx")
 fi
 
-# for i in "${!CASCADES[@]}";
-# do 
-#     PYTHONPATH=/c2/jeff/cascading_cache_2/ \
-#         ATTENTION_METHOD=$ATTENTION_METHOD \
-#         CUDA_VISIBLE_DEVICES=$GPU \
-#         python pred.py \
-#         --sinks $SINKS \
-#         --cascades ${CASCADES[$i]} \
-#         --window $WINDOW \
-#         --model $MODEL \
-#         --comment ${COMMENT[$i]}
-# done
-
+# CUDA_VISIBLE_DEVICES=$GPU \
 for i in "${!CASCADES[@]}";
 do 
     PYTHONPATH=/c2/jeff/cascading_cache_2/ \
-    ATTENTION_METHOD=$ATTENTION_METHOD \
-    deepspeed --include localhost:2,3 --master_port 63290 pred_parallel.py \
+        ATTENTION_METHOD=$attention_method \
+        deepspeed --include localhost:$gpu --master_port $port pred.py \
         --sinks $SINKS \
         --cascades ${CASCADES[$i]} \
         --window $WINDOW \
-        --model $MODEL \
+        --model $model \
         --comment ${COMMENT[$i]}
 done
 
+# ```
+# cd cascading_cache_2
+# git pull origin main
+# cd third_party/LongBench-timber
+# git pull origin cascade
+
+# ./run.sh -m llama3.1-70b-instruct -d streaming_llm -g 0,1,2,3 -p 63290
+# ./run.sh -m qwen2-72b-instruct -d streaming_llm -g 4,5,6,7 -p 63291
+
+# ./run.sh -m llama3.1-70b-instruct -d vanilla -g 0,1,2,3 -p 63292
+# ./run.sh -m qwen2-72b-instruct -d vanilla -g 4,5,6,7 -p 63293
+
+# ./run.sh -m llama3.1-70b-instruct -d bigbird -g 0,1,2,3 -p 63294
+# ./run.sh -m qwen2-72b-instruct -d bigbird -g 4,5,6,7 -p 63295
+# ```
