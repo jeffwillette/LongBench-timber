@@ -26,12 +26,14 @@ elif [ "$attention_method" = "bigbird" ]; then
     COMMENT=("bigbird-quarter-ctx")
 fi
 
+source paths.sh
+
 # CUDA_VISIBLE_DEVICES=$GPU \
 for i in "${!CASCADES[@]}";
 do 
-    PYTHONPATH=/Data3/cascading_cache_2/ \
-        ATTENTION_METHOD=$attention_method \
-        deepspeed --include localhost:$gpu --master_port $port pred.py \
+    PYTHONPATH=$PYTHONPATH \
+    ATTENTION_METHOD=$attention_method \
+    deepspeed --include localhost:$gpu --master_port $port pred.py \
         --sinks $SINKS \
         --cascades ${CASCADES[$i]} \
         --window $WINDOW \

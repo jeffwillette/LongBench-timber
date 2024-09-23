@@ -2,9 +2,11 @@ import os
 from datasets import load_dataset
 import torch
 import deepspeed
+import gc
 import json
 from cascade.models.cascading_cache import CascadingKVCache
 from transformers import AutoTokenizer, AutoConfig
+from transformers.cache_utils import SinkCache, DynamicCache
 from cascade.models.cascade_attention import sample_monkeypatch
 from tqdm import tqdm
 import numpy as np
@@ -157,7 +159,7 @@ def get_pred(
         model2path[model_name],
         model_name,
         device,
-        max_length,
+        max_length + max_gen,
         args,
     )
     mdl = model.module.model
@@ -169,9 +171,9 @@ def get_pred(
                                      truncation=False,
                                      return_tensors="pt").input_ids[0]
 
-        if args.method == ("vanilla" and "truncate" in args.comment):
-            max_length = int(2 ** int(np.log2(tokenized_prompt.size(0) / 4) // 1))
-            # print(f"{tokenized_prompt.size(0)=} {max_length=}")
+        if args.method == "vanilla" and "truncate" in args.comment:
+            max_length = int(2 ** int(np.log2(tokenized_prompt.size(0) / 4) // 1)) + 64
+            print(f"{tokenized_prompt.size(0)=} {max_length=}")
 
         if "chatglm3" in model_name:
             tokenized_prompt = tokenizer(
@@ -181,9 +183,10 @@ def get_pred(
                 add_special_tokens=False).input_ids[0]
         if len(tokenized_prompt) > max_length:
             half = int(max_length / 2)
+            print("truncating")
             # if we are truncating to be equivalent with the cascade models, reset the halfway mark
-            prompt = tokenizer.decode(tokenized_prompt[:half], skip_special_tokens=True) + \
-                tokenizer.decode(tokenized_prompt[-half:], skip_special_tokens=True)
+            prompt = tokenizer.decode(tokenized_prompt[:half], skip_special_tokens=False) + \
+                tokenizer.decode(tokenized_prompt[-half:], skip_special_tokens=False)
 
         if dataset not in ["trec", "triviaqa", "samsum", "lsht", "lcc", "repobench-p"]:  # chat models are better off without build prompts on these tasks
             prompt = build_chat(tokenizer, prompt, model_name)
@@ -194,7 +197,6 @@ def get_pred(
                 input = prompt.to(device)
         else:
             input = tokenizer(prompt, truncation=False, return_tensors="pt").to("cuda")
-            # print(f"len after slicing: {input['input_ids'].size()=}")
         context_length = input.input_ids.shape[-1]
 
         if ATTENTION_METHOD == 'streaming_llm':
@@ -285,16 +287,23 @@ def get_pred(
             elif 'qwen' in model_name:
                 stop_words = ["<|im_end|>"]
 
+            max_seq_len = int(2 ** int(np.log2(input['input_ids'].size(1) / 4) // 1))
+            max_seq_len = min(max_seq_len, 32768)
             if args.method == "bigbird":
-                print(f"input ids before setting max seq length in bigbird generate: {input['input_ids'].size(1)=}")
-                max_seq_len = int(2 ** int(np.log2(input['input_ids'].size(1) / 4) // 1))
-                max_seq_len = min(max_seq_len, 32768)
-                print(f"{max_seq_len=}")
+                # big bird will always use window + random kv + sink so do not use a sink cache for this model
+                print(f"input ids before setting max seq length in bigbird generate: {input['input_ids'].size(1)=} {max_seq_len=}")
                 for lyr in mdl.layers:
                     if args.method == "bigbird":
                         lyr.self_attn.config._bb_window = max_seq_len
-                    elif args.method == "snapkv":
-                        lyr.self_attn.config.max_capacity_prompt = max_seq_len
+
+                past_key_values = DynamicCache()
+            elif args.method == "vanilla":
+                # vanilla needs to have a sink cache set to the max length for generation to maintain fairness
+                # past_key_values = DynamicCache()
+                past_key_values = SinkCache(
+                    window_length=max_seq_len + 64,
+                    num_sink_tokens=64,
+                )
 
             stop_words_ids = [
                 tokenizer(
@@ -313,22 +322,26 @@ def get_pred(
 
             input_ids = input["input_ids"]
 
+            print(f"before input: {input_ids.size()=}")
             output = model.generate(
                 input_ids=input_ids,
-                # attention_mask=mask,
                 max_new_tokens=max_gen,
                 num_beams=1,
                 do_sample=False,
                 temperature=1.0,
                 stopping_criteria=stopping_criteria,
                 use_cache=True,
-                past_key_values=None,
+                past_key_values=past_key_values,
             )[0]
 
             pred = tokenizer.decode(output[context_length:],
                                     skip_special_tokens=True)
 
         pred = post_process(pred, model_name)
+
+        del past_key_values, output
+        torch.cuda.empty_cache()
+        gc.collect()
 
         if args.local_rank == 0:
             with open(out_path, "a", encoding="utf-8") as f:
@@ -404,12 +417,14 @@ def load_model_and_tokenizer(path, model_name, device, seq_len, args):
             device_map="cpu",
         )
 
+    # add a small buffer to account for token differences when truncating in the middle
+    # of the sequence which might lead to different tokenization (see get pred function for middle truncation)
     model = deepspeed.init_inference(
         model,
         tensor_parallel={"tp_size": args.world_size},
         replace_with_kernel_inject=False,
         dtype=torch.float16,
-        max_out_tokens=seq_len,
+        max_out_tokens=seq_len + 64,
     )
 
     model = model.cuda()
@@ -438,7 +453,7 @@ if __name__ == '__main__':
         # for streaming llm, we will never run out of positional embeddings for the quarter-ctx experiment.
         # as the longest prompt in longbench is 65,370. Therefore, the max prompt should be somewhere around 8K
         # so set this max length for all streaming llm models which should not truncate the inputs.
-        max_length = 131072
+        max_length = 129804
 
     if args.e:
         datasets = ["qasper", "multifieldqa_en", "hotpotqa", "2wikimqa", "gov_report", "multi_news", \
