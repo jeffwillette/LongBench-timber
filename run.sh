@@ -13,17 +13,34 @@ do
     esac
 done
 
+# WINDOW=16384
+# CASCADES=(4 1)
+# SINKS=64
+# # COMMENT=("quarter-ctx" "quarter-ctx")
+# COMMENT=("eighth-ctx" "eighth-ctx")
+
 WINDOW=16384
-CASCADES=(4 1)
+CASCADES=(4)
 SINKS=64
-COMMENT=("quarter-ctx" "quarter-ctx")
+# COMMENT=("quarter-ctx-different-sized-layers-latterhalfpos")
+# COMMENT=("quarter-ctx")
+COMMENT=("half-ctx")
 
 if [ "$attention_method" = "vanilla" ]; then
-    CASCADES=(1 1)
-    COMMENT=("vanilla-truncate" "vanilla-unconstrained")
+    # CASCADES=(1 1)
+    # COMMENT=("vanilla-truncate" "vanilla-unconstrained")
+    CASCADES=(1)
+    COMMENT=("vanilla-truncate-retest")
 elif [ "$attention_method" = "bigbird" ]; then
     CASCADES=(1)
-    COMMENT=("bigbird-quarter-ctx")
+    # COMMENT=("bigbird-quarter-ctx-test")
+    COMMENT=("bigbird-quarter-ctx-msq-test")
+elif [ "$attention_method" = "h2o" ]; then
+    CASCADES=(1)
+    # COMMENT=("h2o-linear-retest")
+    COMMENT=("h2o-linear-75-25-half-ctx")
+    # COMMENT=("none")
+    # COMMENT=("truncate")
 fi
 
 source paths.sh

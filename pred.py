@@ -5,6 +5,7 @@ import deepspeed
 import gc
 import json
 from cascade.models.cascading_cache import CascadingKVCache
+from cascade.models.h2o import load
 from transformers import AutoTokenizer, AutoConfig
 from transformers.cache_utils import SinkCache, DynamicCache
 from cascade.models.cascade_attention import sample_monkeypatch
@@ -173,7 +174,10 @@ def get_pred(
 
         if args.method == "vanilla" and "truncate" in args.comment:
             max_length = int(2 ** int(np.log2(tokenized_prompt.size(0) / 4) // 1)) + 64
-            print(f"{tokenized_prompt.size(0)=} {max_length=}")
+            print(f"vanilla truncate {tokenized_prompt.size(0)=} {max_length=}")
+        elif args.method == "h2o" and "truncate" in args.comment:
+            max_length = 8192 + 1024
+            print(f"h2o truncate {tokenized_prompt.size(0)=} {max_length=}")
 
         if "chatglm3" in model_name:
             tokenized_prompt = tokenizer(
@@ -241,11 +245,19 @@ def get_pred(
                 # input_ids = input_ids[:, :50]  # for debugging
                 # context_length = 50
                 # mask = input["attention_mask"]
+                # layers = 28 if "qwen" in args.method else 32
 
                 max_seq_len = int(2 ** int(np.log2(input_ids.size(1) / 4) // 1))
-                max_seq_len = min(max_seq_len, max_length)
+                # max_seq_len = min(max_seq_len, max_length)
+                # max_seq_len = [2 * max_seq_len for _ in range(layers // 4)] + \
+                #     [max_seq_len for _ in range(layers // 4)] + \
+                #     [max_seq_len // 2 for _ in range(layers // 4)] + \
+                #     [max_seq_len // 2 for _ in range(layers // 4)]
+
                 print(f"{max_seq_len=}")
                 window = max_seq_len // args.cascades
+                # window = [m // args.cascades for m in max_seq_len]
+                print(window)
 
                 # window = mdl.config._window // mdl.config._cascades
                 # max_seq_len = mdl.config._window
@@ -287,23 +299,35 @@ def get_pred(
             elif 'qwen' in model_name:
                 stop_words = ["<|im_end|>"]
 
-            max_seq_len = int(2 ** int(np.log2(input['input_ids'].size(1) / 4) // 1))
-            max_seq_len = min(max_seq_len, 32768)
-            if args.method == "bigbird":
+            # max_seq_len = min(max_seq_len, 32768)
+            if args.method in ["bigbird", "h2o"]:
                 # big bird will always use window + random kv + sink so do not use a sink cache for this model
+                max_seq_len = int(2 ** int(np.log2(input['input_ids'].size(1) / 4) // 1))
                 print(f"input ids before setting max seq length in bigbird generate: {input['input_ids'].size(1)=} {max_seq_len=}")
                 for lyr in mdl.layers:
                     if args.method == "bigbird":
                         lyr.self_attn.config._bb_window = max_seq_len
 
+                    elif args.method == "h2o":
+                        # lyr.self_attn.kv_cache.recent_size = max_seq_len // 4
+                        # lyr.self_attn.kv_cache.hh_size = 3 * (max_seq_len // 4)
+                        lyr.self_attn.kv_cache.recent_size = max_seq_len // 2
+                        lyr.self_attn.kv_cache.hh_size = max_seq_len // 2
+
+                        lyr.self_attn.kv_cache.cache_size = \
+                            lyr.self_attn.kv_cache.recent_size + lyr.self_attn.kv_cache.hh_size
+
+                        lyr.self_attn.kv_cache._clean_scores()
+
                 past_key_values = DynamicCache()
             elif args.method == "vanilla":
                 # vanilla needs to have a sink cache set to the max length for generation to maintain fairness
-                # past_key_values = DynamicCache()
-                past_key_values = SinkCache(
-                    window_length=max_seq_len + 64,
-                    num_sink_tokens=64,
-                )
+                print("vanilla dynamic cache for test, revert this")
+                past_key_values = DynamicCache()
+                # past_key_values = SinkCache(
+                #     window_length=max_seq_len + 64,
+                #     num_sink_tokens=64,
+                # )
 
             stop_words_ids = [
                 tokenizer(
@@ -402,6 +426,9 @@ def load_model_and_tokenizer(path, model_name, device, seq_len, args):
         )
         model = sample_monkeypatch(model)
 
+    elif ATTENTION_METHOD == "h2o":
+        args.cascade_stride = 512
+        model, _ = load(path, heavy_hitter=True, args=args)
     else:
         config = AutoConfig.from_pretrained(path)
         config.attn_implementation = config._attn_implementation = 'flash_attention_2'
@@ -488,7 +515,7 @@ if __name__ == '__main__':
             data = load_dataset('THUDM/LongBench', dataset, split='test')
             pred_root_name = 'pred'
 
-        if args.method in ['vanilla', 'bigbird']:
+        if args.method in ['vanilla', 'bigbird', 'h2o']:
             pred_root = f"{pred_root_name}/{model_name}_{args.method}_comment_{args.comment}"
         elif args.method in ['streaming_llm', 'hip']:
             pred_root = f"{pred_root_name}/{model_name}_{args.method}_window_{args.window}_cascades_{args.cascades}_sinks_{args.sinks}_comment_{args.comment}"

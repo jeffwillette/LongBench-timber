@@ -73,7 +73,7 @@ def parse_args(args=None):
     parser.add_argument('--method',
                         required=True,
                         type=str,
-                        choices=['none', 'hip', 'bigbird', 'vanilla', 'streaming_llm'])
+                        choices=['h2o', 'none', 'hip', 'bigbird', 'vanilla', 'streaming_llm'])
     parser.add_argument('--sinks', type=int, default=None)
     parser.add_argument('--cascades', type=int, default=None)
     parser.add_argument('--window', type=int, default=None)
@@ -134,7 +134,7 @@ if __name__ == '__main__':
 
     if args.method == 'none':
         path = f"{pred_root_name}/{args.model}_{args.method}/"
-    elif args.method in ['vanilla', 'bigbird']:
+    elif args.method in ['vanilla', 'bigbird', 'h2o']:
         path = f"{pred_root_name}/{args.model}_{args.method}_comment_{args.comment}"
     elif args.method in ['streaming_llm', 'hip']:
         # path = f"{pred_root_name}/{args.model}_{args.method}_k{args.k}/"
