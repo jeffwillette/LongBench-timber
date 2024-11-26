@@ -5,7 +5,6 @@ import deepspeed
 import gc
 import json
 from cascade.models.cascading_cache import CascadingKVCache
-from cascade.models.h2o import load
 from transformers import AutoTokenizer, AutoConfig
 from transformers.cache_utils import SinkCache, DynamicCache
 from cascade.models.cascade_attention import sample_monkeypatch
@@ -21,6 +20,9 @@ from typing import Union
 from cascade.models.llama.modeling_llama import LlamaForCausalLM
 from cascade.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM
 from transformers.generation.utils import GenerateDecoderOnlyOutput, GenerateEncoderDecoderOutput
+from transformers import pipeline
+from minference import MInference, get_support_models
+from cascade.models.pyramid_kv_monkeypatch import replace_llama as pyramid_kv_replace_llama
 
 # from vllm.distributed.parallel_state import destroy_model_parallel, destroy_distributed_environment
 
@@ -61,7 +63,7 @@ def parse_args(args=None):
     parser.add_argument('--method',
                         type=str,
                         default=os.getenv("ATTENTION_METHOD", "none"),
-                        choices=['none', 'vanilla', 'hip', 'streaming_llm', 'bigbird'])
+                        choices=['none', 'vanilla', 'hip', 'streaming_llm', 'bigbird', 'minference-cascade'])
     parser.add_argument('--sinks', type=int, default=None)
     parser.add_argument('--cascades', type=int, default=None)
     parser.add_argument('--window', type=int, default=None)
@@ -175,9 +177,12 @@ def get_pred(
         if args.method == "vanilla" and "truncate" in args.comment:
             max_length = int(2 ** int(np.log2(tokenized_prompt.size(0) / 4) // 1)) + 64
             print(f"vanilla truncate {tokenized_prompt.size(0)=} {max_length=}")
-        elif args.method == "h2o" and "truncate" in args.comment:
-            max_length = 8192 + 1024
-            print(f"h2o truncate {tokenized_prompt.size(0)=} {max_length=}")
+        elif args.method == "minference" and "truncate" in args.comment:
+            max_length = int(2 ** int(np.log2(tokenized_prompt.size(0) / 4) // 1)) + 64
+            print(f"minference truncate {tokenized_prompt.size(0)=} {max_length=}")
+        elif args.method == "pyramid_kv" and "truncate" in args.comment:
+            max_length = int(2 ** int(np.log2(tokenized_prompt.size(0) / 4) // 1)) + 64
+            print(f"pyamid_kv truncate {tokenized_prompt.size(0)=} {max_length=}")
 
         if "chatglm3" in model_name:
             tokenized_prompt = tokenizer(
@@ -203,7 +208,7 @@ def get_pred(
             input = tokenizer(prompt, truncation=False, return_tensors="pt").to("cuda")
         context_length = input.input_ids.shape[-1]
 
-        if ATTENTION_METHOD == 'streaming_llm':
+        if ATTENTION_METHOD in ['streaming_llm', 'minference-cascade']:
             if dataset == "samsum":  # prevent illegal output on samsum (model endlessly repeat "\nDialogue"), might be a prompting issue
                 raise Exception()
                 with torch.inference_mode():
@@ -292,7 +297,6 @@ def get_pred(
                                     skip_special_tokens=True)
 
             past_key_values.reset()
-
         else:
             if 'llama' in model_name:
                 stop_words = ["<|eot_id|>"]
@@ -300,7 +304,7 @@ def get_pred(
                 stop_words = ["<|im_end|>"]
 
             # max_seq_len = min(max_seq_len, 32768)
-            if args.method in ["bigbird", "h2o"]:
+            if args.method in ["bigbird"]:
                 # big bird will always use window + random kv + sink so do not use a sink cache for this model
                 max_seq_len = int(2 ** int(np.log2(input['input_ids'].size(1) / 4) // 1))
                 print(f"input ids before setting max seq length in bigbird generate: {input['input_ids'].size(1)=} {max_seq_len=}")
@@ -308,19 +312,8 @@ def get_pred(
                     if args.method == "bigbird":
                         lyr.self_attn.config._bb_window = max_seq_len
 
-                    elif args.method == "h2o":
-                        # lyr.self_attn.kv_cache.recent_size = max_seq_len // 4
-                        # lyr.self_attn.kv_cache.hh_size = 3 * (max_seq_len // 4)
-                        lyr.self_attn.kv_cache.recent_size = max_seq_len // 2
-                        lyr.self_attn.kv_cache.hh_size = max_seq_len // 2
-
-                        lyr.self_attn.kv_cache.cache_size = \
-                            lyr.self_attn.kv_cache.recent_size + lyr.self_attn.kv_cache.hh_size
-
-                        lyr.self_attn.kv_cache._clean_scores()
-
                 past_key_values = DynamicCache()
-            elif args.method == "vanilla":
+            elif args.method in ["vanilla"]:
                 # vanilla needs to have a sink cache set to the max length for generation to maintain fairness
                 print("vanilla dynamic cache for test, revert this")
                 past_key_values = DynamicCache()
@@ -328,6 +321,16 @@ def get_pred(
                 #     window_length=max_seq_len + 64,
                 #     num_sink_tokens=64,
                 # )
+            elif args.method in ["minference"]:
+                past_key_values = None
+                if "truncate" not in args.comment:
+                    max_seq_len = int(2 ** int(np.log2(input['input_ids'].size(1) / 4) // 1))
+
+                    for lyr in model.module.model.layers:
+                        lyr.self_attn.config.streaming_kwargs['n_local'] = max_seq_len
+
+            elif args.method in ["pyramid_kv"]:
+                past_key_values = None
 
             stop_words_ids = [
                 tokenizer(
@@ -426,9 +429,101 @@ def load_model_and_tokenizer(path, model_name, device, seq_len, args):
         )
         model = sample_monkeypatch(model)
 
-    elif ATTENTION_METHOD == "h2o":
-        args.cascade_stride = 512
-        model, _ = load(path, heavy_hitter=True, args=args)
+    elif ATTENTION_METHOD == "minference-cascade":
+        config = AutoConfig.from_pretrained(path)
+        config.attn_implementation = config._attn_implementation = 'flash_attention_2'
+        config._method = "minference-cascade"
+        config._batch_size = 1
+        config._sinks = args.sinks
+        config._cascades = args.cascades
+        config._window = args.window
+        config.world_size = 1
+        config._cascade_func = "pow2"
+        config._head_reduction = "max"
+        config._method = 'minference-cascade'
+        config._cascade_stride = 65536 + 32768
+        config._homogeneous_heads = False
+        config._do_og_pos = False
+
+        model = ModelClass.from_pretrained(
+            path,
+            config=config,
+            torch_dtype=torch.float16,
+            device_map="cpu",
+        )
+
+        minference_name = model_name
+        if "llama" in minference_name.lower():
+            minference_name = "meta-llama/" + path.split("/")[-1]
+        elif "qwen" in minference_name.lower():
+            minference_name = "Qwen/" + path.split("/")[-1]
+        else:
+            raise NotImplementedError("model not implemented for minference")
+
+        model.minference_name = minference_name
+
+        # Patch MInference Module,
+        # If you use the local path, please use the model_name from HF when initializing MInference.
+        minference_patch = MInference(
+            attn_type="minference",
+            model_name=minference_name,
+            use_cascade=True,
+        )
+
+        model = minference_patch(model)
+        model = sample_monkeypatch(model)
+        model = model.cuda()
+
+    elif ATTENTION_METHOD == "minference":
+
+        config = AutoConfig.from_pretrained(path)
+        config.attn_implementation = config._attn_implementation = 'flash_attention_2'
+        config._method = "minference"
+
+        model = ModelClass.from_pretrained(
+            path,
+            config=config,
+            torch_dtype=torch.float16,
+            device_map="cpu",
+        )
+
+        minference_name = path
+        if "llama" in minference_name.lower():
+            minference_name = "meta-llama/" + path.split("/")[-1]
+        elif "qwen" in minference_name.lower():
+            minference_name = "Qwen/" + path.split("/")[-1]
+        else:
+            raise NotImplementedError("model not implemented for minference")
+
+        model.minference_name = minference_name
+
+        # Patch MInference Module,
+        # If you use the local path, please use the model_name from HF when initializing MInference.
+        minference_patch = MInference(
+            attn_type="streaming" if "streaming" in args.comment else "minference",
+            model_name=minference_name,
+            n_local=16384 + 512,
+            n_init=64,
+        )
+
+        model = minference_patch(model)
+    elif ATTENTION_METHOD == "pyramid_kv":
+        print("replacing pyramid kv")
+        pyramid_kv_replace_llama("pyramidkv")
+
+        config = AutoConfig.from_pretrained(path)
+        config.attn_implementation = config._attn_implementation = 'flash_attention_2'
+        if args.method == "bigbird":
+            config._method = "bigbird"
+        else:
+            config._method = "vanilla"
+
+        model = ModelClass.from_pretrained(
+            path,
+            config=config,
+            torch_dtype=torch.float16,
+            device_map="cpu",
+        )
     else:
         config = AutoConfig.from_pretrained(path)
         config.attn_implementation = config._attn_implementation = 'flash_attention_2'
@@ -515,10 +610,12 @@ if __name__ == '__main__':
             data = load_dataset('THUDM/LongBench', dataset, split='test')
             pred_root_name = 'pred'
 
-        if args.method in ['vanilla', 'bigbird', 'h2o']:
+        if args.method in ['vanilla', 'bigbird']:
             pred_root = f"{pred_root_name}/{model_name}_{args.method}_comment_{args.comment}"
         elif args.method in ['streaming_llm', 'hip']:
             pred_root = f"{pred_root_name}/{model_name}_{args.method}_window_{args.window}_cascades_{args.cascades}_sinks_{args.sinks}_comment_{args.comment}"
+        elif args.method in ["minference", "pyramid_kv", "minference-cascade"]:
+            pred_root = f"{pred_root_name}/{model_name}_{args.method}_comment_{args.comment}"
         else:
             raise Exception()
 

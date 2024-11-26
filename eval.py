@@ -73,7 +73,7 @@ def parse_args(args=None):
     parser.add_argument('--method',
                         required=True,
                         type=str,
-                        choices=['h2o', 'none', 'hip', 'bigbird', 'vanilla', 'streaming_llm'])
+                        choices=['h2o', 'none', 'hip', 'bigbird', 'minference', 'pyramid_kv', 'vanilla', 'streaming_llm', 'minference-cascade'])
     parser.add_argument('--sinks', type=int, default=None)
     parser.add_argument('--cascades', type=int, default=None)
     parser.add_argument('--window', type=int, default=None)
@@ -139,6 +139,9 @@ if __name__ == '__main__':
     elif args.method in ['streaming_llm', 'hip']:
         # path = f"{pred_root_name}/{args.model}_{args.method}_k{args.k}/"
         path = f"{pred_root_name}/{args.model}_{args.method}_window_{args.window}_cascades_{args.cascades}_sinks_{args.sinks}_comment_{args.comment}"
+    elif args.method in ['minference', 'pyramid_kv', 'minference-cascade']:
+        # path = f"{pred_root_name}/{args.model}_{args.method}_k{args.k}/"
+        path = f"{pred_root_name}/{args.model}_{args.method}_comment_{args.comment}"
     else:
         raise Exception()
 
