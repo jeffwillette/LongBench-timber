@@ -67,6 +67,7 @@ def parse_args(args=None):
     parser.add_argument('--sinks', type=int, default=None)
     parser.add_argument('--cascades', type=int, default=None)
     parser.add_argument('--window', type=int, default=None)
+    parser.add_argument('--cascade_stride', type=int, default=512)
     parser.add_argument('--comment', type=str, default="none")
     parser.add_argument('--local_rank', default=0, type=int)
 
